@@ -20,17 +20,26 @@ const (
 )
 
 type Sound struct {
-	loaded bool
+	loaded bool // TODO: allow playing of partially converted audio
 	buffer [][]byte
 }
 
 // Plays this sound over the specified VoiceConnection
-func (s *Sound) Play(vc *discordgo.VoiceConnection) {
+func (s *Sound) Play(vc *discordgo.VoiceConnection, skip chan bool) {
 	vc.Speaking(true)
 	defer vc.Speaking(false)
 
 	for _, buff := range s.buffer {
 		vc.OpusSend <- buff
+		doSkip := false
+		select {
+		case <-skip:
+			doSkip = true
+		default:
+		}
+		if doSkip {
+			break
+		}
 	}
 }
 

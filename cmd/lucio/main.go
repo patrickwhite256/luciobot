@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
@@ -12,13 +13,14 @@ import (
 )
 
 var (
-	demoSound *luciobot.Sound
-
 	// discordgo session
 	discord *discordgo.Session
 
 	// Map of Guild id's to *Play channels, used for queuing and rate-limiting guilds
 	queues map[string]chan *Play = make(map[string]chan *Play)
+
+	// Map of guild id's to "skip song" channel
+	skips map[string]chan bool = make(map[string]chan bool)
 
 	// Sound encoding settings
 	BITRATE        = 128
@@ -31,9 +33,16 @@ type Play struct {
 	ChannelID string
 	UserID    string
 	Sound     *luciobot.Sound
+}
 
-	// The next play to occur after this
-	Next *Play
+func sendMessage(msg string, channel *discordgo.Channel) {
+	_, err := discord.ChannelMessageSend(channel.ID, msg)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"channel": channel.Name,
+			"error":   err,
+		}).Warn("Could not send message to channel.")
+	}
 }
 
 // Attempts to find the current users voice channel inside a given guild
@@ -118,12 +127,7 @@ func playSound(play *Play, vc *discordgo.VoiceConnection) (err error) {
 	time.Sleep(time.Millisecond * 32)
 
 	// Play the sound
-	play.Sound.Play(vc)
-
-	// If this is chained, play the chained sound
-	if play.Next != nil {
-		playSound(play.Next, vc)
-	}
+	play.Sound.Play(vc, skips[play.GuildID])
 
 	// If there is another song in the queue, recurse and play that
 	if len(queues[play.GuildID]) > 0 {
@@ -154,6 +158,7 @@ func onReady(s *discordgo.Session, event *discordgo.Ready) {
 }
 
 func onGuildCreate(s *discordgo.Session, event *discordgo.GuildCreate) {
+	skips[event.Guild.ID] = make(chan bool, 1)
 	if event.Guild.Unavailable {
 		return
 	}
@@ -161,13 +166,7 @@ func onGuildCreate(s *discordgo.Session, event *discordgo.GuildCreate) {
 	for _, channel := range event.Guild.Channels {
 		// send to #general
 		if channel.ID == event.Guild.ID {
-			_, err := s.ChannelMessageSend(channel.ID, "Lucio, coming at you!")
-			if err != nil {
-				log.WithFields(log.Fields{
-					"channel": channel.Name,
-					"error":   err,
-				}).Warn("Could not send message to channel.")
-			}
+			sendMessage("Lucio, coming at you!", channel)
 			return
 		}
 	}
@@ -178,8 +177,11 @@ func onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// msg := strings.Replace(m.ContentWithMentionsReplaced(), s.State.Ready.User.Username, "username", 1)
-	// parts := strings.Split(strings.ToLower(msg), " ")
+	msg := m.ContentWithMentionsReplaced()
+	parts := strings.Split(msg, " ")
+	if strings.ToLower(parts[0]) != "!m" {
+		return
+	}
 
 	channel, _ := s.State.Channel(m.ChannelID)
 	if channel == nil {
@@ -200,7 +202,22 @@ func onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	go enqueuePlay(m.Author, guild, demoSound)
+	if len(parts) < 2 {
+		sendMessage("I didn't catch that!", channel)
+		return
+	}
+
+	command, found := handlers[strings.ToLower(parts[1])]
+	if !found {
+		sendMessage("I don't know that command!", channel)
+		return
+	}
+
+	if len(parts) > 2 {
+		command(m.Author, channel, guild, &parts[2])
+	} else {
+		command(m.Author, channel, guild, nil)
+	}
 }
 
 func main() {
@@ -209,17 +226,6 @@ func main() {
 		err   error
 	)
 	flag.Parse()
-
-	var s luciobot.Sound
-	err = s.Load("audio/atlas.mp4")
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err,
-		}).Fatal("Failed to create sound")
-		return
-	}
-
-	demoSound = &s
 
 	discord, err = discordgo.New("Bot " + *Token)
 	if err != nil {
