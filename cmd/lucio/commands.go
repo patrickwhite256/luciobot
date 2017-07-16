@@ -34,6 +34,11 @@ func handlePlay(user *discordgo.User, channel *discordgo.Channel, guild *discord
 		sendMessage("You gotta tell me a video to play!", channel)
 		return
 	}
+	vChannel := getCurrentVoiceChannel(user, guild)
+	if vChannel == nil {
+		sendMessage("You gotta be in a voice channel for me to play something!", channel)
+		return
+	}
 
 	info := luciobot.GetVideoInfo(*arg)
 	if info == nil {
